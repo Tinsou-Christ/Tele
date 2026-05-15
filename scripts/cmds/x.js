@@ -1,31 +1,35 @@
 const axios = require("axios");
 const fs = require("fs-extra");
 const path = require("path");
+const moment = require("moment-timezone");
 
 module.exports = {
   nix: {
     name: "x",
-    aliases: ["video", "searchvid"],
-    version: "1.0.0",
+    aliases: ["xvid", "video"],
+    version: "2.0.0",
     author: "Christus",
-    role: 0,
+    role: 2,
     category: "media",
-    description: "Recherche et télécharge des vidéos.",
+    description: "Recherche et téléchargement de vidéos.",
     cooldown: 5,
-    guide: "{p}x <query>"
+    guide: "{p}x <recherche>"
   },
 
   async onStart({ bot, chatId, args, msg }) {
     const query = args.join(" ");
 
     if (!query) {
-      return bot.sendMessage(chatId, "❌ Entrez un texte de recherche.");
+      return bot.sendMessage(
+        chatId,
+        "❌ Veuillez entrer un texte de recherche."
+      );
     }
 
     try {
       const waitMsg = await bot.sendMessage(
         chatId,
-        "🔎 Recherche des vidéos en cours..."
+        "🔍 Recherche des vidéos en cours..."
       );
 
       const res = await axios.get(
@@ -53,139 +57,201 @@ module.exports = {
           return min <= 10;
         }
 
-        if (duration.includes("sec")) return true;
+        if (duration.includes("sec")) {
+          return true;
+        }
 
         return false;
       });
 
-      const list = results.slice(0, 10);
+      const list = results.slice(0, 6);
 
       if (list.length === 0) {
-        return bot.editMessageText(
-          "❌ Aucun résultat trouvé.",
-          {
-            chat_id: chatId,
-            message_id: waitMsg.message_id
-          }
+        await bot.deleteMessage(
+          chatId,
+          waitMsg.message_id
+        );
+
+        return bot.sendMessage(
+          chatId,
+          "❌ Aucun résultat trouvé."
         );
       }
 
       const cacheDir = path.join(__dirname, "cache");
       fs.ensureDirSync(cacheDir);
 
-      let text = `🔎 Résultats pour : ${query}\n`;
-      text += `📹 Vidéos ≤ 10 minutes\n\n`;
+      const time = moment()
+        .tz("Africa/Abidjan")
+        .format("DD/MM/YYYY HH:mm");
 
-      const media = [];
+      const thumbs = [];
+
+      for (const item of list) {
+        if (!item.thumbnail) continue;
+
+        try {
+          const thumbPath = path.join(
+            cacheDir,
+            `thumb_${Date.now()}_${thumbs.length}.jpg`
+          );
+
+          const img = await axios({
+            url: item.thumbnail,
+            method: "GET",
+            responseType: "stream",
+            timeout: 30000
+          });
+
+          const writer = fs.createWriteStream(
+            thumbPath
+          );
+
+          img.data.pipe(writer);
+
+          await new Promise((resolve, reject) => {
+            writer.on("finish", resolve);
+            writer.on("error", reject);
+          });
+
+          thumbs.push(thumbPath);
+
+        } catch (e) {
+          console.log(e);
+        }
+      }
+
+      await bot.deleteMessage(
+        chatId,
+        waitMsg.message_id
+      );
+
+      if (thumbs.length > 0) {
+        const mediaGroup = thumbs.map(thumb => ({
+          type: "photo",
+          media: thumb
+        }));
+
+        await bot.sendMediaGroup(
+          chatId,
+          mediaGroup
+        );
+      }
+
+      let text =
+        `📹 𝗫 𝗩𝗶𝗱𝗲𝗼 𝗦𝗲𝗮𝗿𝗰𝗵\n` +
+        `━━━━━━━━━━━━━━\n\n` +
+        `👤 ${msg.from.first_name || "Utilisateur"}\n` +
+        `🕒 ${time}\n` +
+        `🔎 ${query}\n\n` +
+        `🎯 Sélectionnez une vidéo\n\n`;
 
       for (let i = 0; i < list.length; i++) {
         const item = list[i];
 
-        text += `${i + 1}. ${item.title}\n⏱️ ${item.duration}\n\n`;
-
-        if (item.thumbnail) {
-          try {
-            const thumbPath = path.join(
-              cacheDir,
-              `thumb_${Date.now()}_${i}.jpg`
-            );
-
-            const img = await axios({
-              url: item.thumbnail,
-              method: "GET",
-              responseType: "stream",
-              timeout: 30000
-            });
-
-            const writer = fs.createWriteStream(thumbPath);
-
-            img.data.pipe(writer);
-
-            await new Promise((resolve, reject) => {
-              writer.on("finish", resolve);
-              writer.on("error", reject);
-            });
-
-            media.push({
-              type: "photo",
-              media: fs.createReadStream(thumbPath),
-              caption:
-                i === 0
-                  ? text
-                  : `${i + 1}. ${item.title}\n⏱️ ${item.duration}`
-            });
-          } catch {}
-        }
+        text +=
+          `📍 ${i + 1}. ${item.title}\n` +
+          `⏱️ ${item.duration}\n\n`;
       }
 
-      if (media.length > 0) {
-        await bot.sendMediaGroup(chatId, media);
-      } else {
-        await bot.sendMessage(chatId, text);
-      }
+      text +=
+        `━━━━━━━━━━━━━━\n` +
+        `💬 Répondez avec un nombre entre 1 et ${list.length}\n` +
+        `⏰ Temps : 30 secondes`;
 
-      await bot.sendMessage(
+      const replyMsg = await bot.sendMessage(
         chatId,
-        `💬 Répondez avec un numéro entre 1 et ${list.length} pour télécharger la vidéo.`
+        text,
+        {
+          reply_to_message_id: msg.message_id
+        }
       );
 
-      global.replyMap = global.replyMap || new Map();
-
-      global.replyMap.set(chatId, {
-        author: msg.from.id,
-        list
+      thumbs.forEach(thumb => {
+        try {
+          fs.unlinkSync(thumb);
+        } catch {}
       });
 
-      try {
-        await bot.deleteMessage(chatId, waitMsg.message_id);
-      } catch {}
+      global.teamnix = global.teamnix || {};
+      global.teamnix.replies =
+        global.teamnix.replies || new Map();
 
-      setTimeout(() => {
-        fs.readdirSync(cacheDir).forEach(file => {
-          const filePath = path.join(cacheDir, file);
+      global.teamnix.replies.set(
+        replyMsg.message_id,
+        {
+          type: "x_reply",
+          authorId: msg.from.id,
+          results: list,
+          searchQuery: query
+        }
+      );
 
-          if (fs.existsSync(filePath)) {
-            fs.unlinkSync(filePath);
-          }
-        });
-      }, 5000);
+      setTimeout(async () => {
+        if (
+          global.teamnix.replies.has(
+            replyMsg.message_id
+          )
+        ) {
+          global.teamnix.replies.delete(
+            replyMsg.message_id
+          );
+
+          bot.sendMessage(
+            chatId,
+            "⏰ Temps écoulé ! Veuillez relancer la commande."
+          );
+        }
+      }, 30000);
 
     } catch (error) {
       console.error(error);
 
       bot.sendMessage(
         chatId,
-        "❌ Une erreur est survenue pendant la recherche."
+        "❌ Erreur API."
       );
     }
   },
 
-  async onReply({ bot, chatId, msg }) {
+  async onReply({
+    bot,
+    chatId,
+    msg,
+    replyMsg,
+    data
+  }) {
     try {
-      if (!global.replyMap || !global.replyMap.has(chatId)) return;
+      if (
+        data.type !== "x_reply" ||
+        msg.from.id !== data.authorId
+      ) return;
 
-      const data = global.replyMap.get(chatId);
-
-      if (msg.from.id !== data.author) return;
-
-      const index = parseInt(msg.text);
+      const choice = parseInt(msg.text);
 
       if (
-        isNaN(index) ||
-        index < 1 ||
-        index > data.list.length
+        isNaN(choice) ||
+        choice < 1 ||
+        choice > data.results.length
       ) {
         return bot.sendMessage(
           chatId,
-          "❌ Numéro invalide."
+          "❌ Sélection invalide."
         );
       }
 
-      const selected = data.list[index - 1];
+      const selected =
+        data.results[choice - 1];
 
-      const wait = await bot.sendMessage(
+      global.teamnix.replies.delete(
+        replyMsg.message_id
+      );
+
+      const loadingMsg = await bot.sendMessage(
         chatId,
-        `⏳ Téléchargement de la vidéo...\n\n🎬 ${selected.title}`
+        `⏳ Téléchargement de la vidéo...\n\n` +
+        `🎬 ${selected.title}\n` +
+        `⏱️ ${selected.duration}`
       );
 
       const res = await axios.get(
@@ -197,9 +263,15 @@ module.exports = {
 
       const videoData = res.data.data;
 
-      const videoUrl = videoData?.downloads?.[0]?.url;
+      const videoUrl =
+        videoData?.downloads?.[0]?.url;
 
       if (!videoUrl) {
+        await bot.deleteMessage(
+          chatId,
+          loadingMsg.message_id
+        );
+
         return bot.sendMessage(
           chatId,
           "❌ Impossible de récupérer la vidéo."
@@ -218,7 +290,9 @@ module.exports = {
         timeout: 30000
       });
 
-      const writer = fs.createWriteStream(tempPath);
+      const writer = fs.createWriteStream(
+        tempPath
+      );
 
       response.data.pipe(writer);
 
@@ -232,27 +306,34 @@ module.exports = {
         tempPath,
         {
           caption:
+            `✅ Téléchargement réussi !\n\n` +
             `🎬 ${videoData.title}\n` +
             `⏱️ ${videoData.duration || "Inconnue"}`
         }
       );
 
+      await bot.deleteMessage(
+        chatId,
+        loadingMsg.message_id
+      );
+
       try {
-        await bot.deleteMessage(chatId, wait.message_id);
+        await bot.deleteMessage(
+          chatId,
+          replyMsg.message_id
+        );
       } catch {}
 
       if (fs.existsSync(tempPath)) {
         fs.unlinkSync(tempPath);
       }
 
-      global.replyMap.delete(chatId);
-
     } catch (error) {
       console.error(error);
 
       bot.sendMessage(
         chatId,
-        "❌ Échec de l'envoi de la vidéo."
+        "❌ Échec du téléchargement."
       );
     }
   }
