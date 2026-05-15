@@ -31,7 +31,7 @@ const nix = {
   aliases: ["shizu"],
   description: "Advanced AI (text, image, music, video, lyrics)",
   author: "Christus",
-  prefix: true,
+  prefix: false,
   category: "ai",
   type: "anyone",
   cooldown: 3,
