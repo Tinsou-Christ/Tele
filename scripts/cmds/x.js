@@ -3,339 +3,364 @@ const fs = require("fs-extra");
 const path = require("path");
 const moment = require("moment-timezone");
 
-module.exports = {
-  nix: {
-    name: "x",
-    aliases: ["xvid", "video"],
-    version: "2.1.0",
-    author: "Christus",
-    role: 2,
-    category: "media",
-    description: "Recherche et téléchargement de vidéos.",
-    cooldown: 5,
-    guide: "{p}x <recherche>"
-  },
+const nix = {
+  name: "x",
+  version: "12.0.0",
+  aliases: ["xvideo", "xsearch"],
+  description: "Recherche et téléchargement vidéo",
+  author: "Christus",
+  prefix: true,
+  category: "media",
+  role: 0,
+  cooldown: 10,
+  guide: "{p}x <recherche>"
+};
 
-  async onStart({ bot, chatId, args, msg }) {
-    const query = args.join(" ");
+async function streamFromURL(url) {
+  const response = await axios({
+    url,
+    responseType: "stream"
+  });
+  return response.data;
+}
 
-    if (!query) {
+function isValidVideo(item) {
+  const title = (item.title || "").toLowerCase();
+  const duration = (item.duration || "").toLowerCase();
+
+  if (
+    title.includes("sex") ||
+    title.includes("porn") ||
+    title.includes("xxx")
+  ) {
+    return false;
+  }
+
+  if (duration.includes("min")) {
+    const min = parseInt(duration);
+    return min <= 10;
+  }
+
+  if (duration.includes("sec")) {
+    return true;
+  }
+
+  return false;
+}
+
+function buildMessage(list, userName) {
+  const time = moment()
+    .tz("Africa/Abidjan")
+    .format("DD/MM/YYYY HH:mm:ss");
+
+  let text =
+`🔎 𝗩𝗶𝗱𝗲𝗼 𝗦𝗲𝗮𝗿𝗰𝗵
+━━━━━━━━━━━━━━
+
+👤 ${userName}
+🕒 ${time}
+
+🎬 Résultats disponibles :
+
+`;
+
+  for (let i = 0; i < list.length; i++) {
+    const item = list[i];
+
+    text +=
+`${i + 1}. ${item.title}
+⏱️ ${item.duration}
+
+`;
+  }
+
+  text +=
+`━━━━━━━━━━━━━━
+💬 Répondez avec un nombre entre 1 et ${list.length}`;
+
+  return text;
+}
+
+async function onStart({
+  bot,
+  msg,
+  chatId,
+  args,
+  usages
+}) {
+  const query = args.join(" ").trim();
+
+  if (!query) {
+    return usages();
+  }
+
+  const userId = msg.from.id;
+  const userName =
+    msg.from.first_name ||
+    msg.from.username ||
+    "Utilisateur";
+
+  let loadingMsg;
+
+  try {
+    loadingMsg = await bot.sendMessage(
+      chatId,
+      "🔍 Recherche des vidéos en cours...",
+      {
+        reply_to_message_id: msg.message_id
+      }
+    );
+
+    const res = await axios.get(
+      `https://x-search-api-sagor.vercel.app/sagor?apikey=sagor&q=${encodeURIComponent(query)}`
+    );
+
+    let results = res.data.data || [];
+
+    results = results.filter(isValidVideo);
+
+    const list = results.slice(0, 10);
+
+    if (list.length === 0) {
+      await bot.deleteMessage(chatId, loadingMsg.message_id);
+
       return bot.sendMessage(
         chatId,
-        "❌ Veuillez entrer un texte de recherche."
-      );
-    }
-
-    try {
-      const waitMsg = await bot.sendMessage(
-        chatId,
-        "🔍 Recherche des vidéos en cours..."
-      );
-
-      const res = await axios.get(
-        `https://x-search-api-sagor.vercel.app/sagor?apikey=sagor&q=${encodeURIComponent(query)}`,
-        {
-          timeout: 30000
-        }
-      );
-
-      let results = res.data.data || [];
-
-      results = results.filter(item => {
-        const title = (item.title || "").toLowerCase();
-
-        if (
-          title.includes("sex") ||
-          title.includes("porn") ||
-          title.includes("xxx")
-        ) return false;
-
-        const duration = (item.duration || "").toLowerCase();
-
-        if (duration.includes("min")) {
-          const min = parseInt(duration);
-          return min <= 10;
-        }
-
-        if (duration.includes("sec")) {
-          return true;
-        }
-
-        return false;
-      });
-
-      const list = results.slice(0, 6);
-
-      if (list.length === 0) {
-        await bot.deleteMessage(
-          chatId,
-          waitMsg.message_id
-        );
-
-        return bot.sendMessage(
-          chatId,
-          "❌ Aucun résultat trouvé."
-        );
-      }
-
-      const cacheDir = path.join(__dirname, "cache");
-      fs.ensureDirSync(cacheDir);
-
-      const time = moment()
-        .tz("Africa/Abidjan")
-        .format("DD/MM/YYYY HH:mm");
-
-      const thumbs = [];
-
-      for (const item of list) {
-        if (!item.thumbnail) continue;
-
-        try {
-          const thumbPath = path.join(
-            cacheDir,
-            `thumb_${Date.now()}_${thumbs.length}.jpg`
-          );
-
-          const img = await axios({
-            url: item.thumbnail,
-            method: "GET",
-            responseType: "stream",
-            timeout: 30000
-          });
-
-          const writer = fs.createWriteStream(
-            thumbPath
-          );
-
-          img.data.pipe(writer);
-
-          await new Promise((resolve, reject) => {
-            writer.on("finish", resolve);
-            writer.on("error", reject);
-          });
-
-          thumbs.push(thumbPath);
-
-        } catch (e) {
-          console.log(e);
-        }
-      }
-
-      await bot.deleteMessage(
-        chatId,
-        waitMsg.message_id
-      );
-
-      if (thumbs.length > 0) {
-        const mediaGroup = thumbs.map(thumb => ({
-          type: "photo",
-          media: thumb
-        }));
-
-        await bot.sendMediaGroup(
-          chatId,
-          mediaGroup
-        );
-      }
-
-      let text =
-        `📹 𝗫 𝗩𝗶𝗱𝗲𝗼 𝗦𝗲𝗮𝗿𝗰𝗵\n` +
-        `━━━━━━━━━━━━━━\n\n` +
-        `👤 ${msg.from.first_name || "Utilisateur"}\n` +
-        `🕒 ${time}\n` +
-        `🔎 ${query}\n\n` +
-        `🎯 Sélectionnez une vidéo\n\n`;
-
-      for (let i = 0; i < list.length; i++) {
-        const item = list[i];
-
-        text +=
-          `📍 ${i + 1}. ${item.title}\n` +
-          `⏱️ ${item.duration}\n\n`;
-      }
-
-      text +=
-        `━━━━━━━━━━━━━━\n` +
-        `💬 Répondez avec un nombre entre 1 et ${list.length}\n` +
-        `⏰ Temps : 30 secondes`;
-
-      const replyMsg = await bot.sendMessage(
-        chatId,
-        text,
+        "❌ Aucun résultat trouvé.",
         {
           reply_to_message_id: msg.message_id
         }
       );
-
-      thumbs.forEach(thumb => {
-        try {
-          fs.unlinkSync(thumb);
-        } catch {}
-      });
-
-      global.teamnix = global.teamnix || {};
-      global.teamnix.replies =
-        global.teamnix.replies || new Map();
-
-      global.teamnix.replies.set(
-        replyMsg.message_id,
-        {
-          commandName: "x",
-          type: "x_reply",
-          authorId: msg.from.id,
-          results: list,
-          searchQuery: query
-        }
-      );
-
-      setTimeout(async () => {
-        if (
-          global.teamnix.replies.has(
-            replyMsg.message_id
-          )
-        ) {
-          global.teamnix.replies.delete(
-            replyMsg.message_id
-          );
-
-          bot.sendMessage(
-            chatId,
-            "⏰ Temps écoulé ! Veuillez relancer la commande."
-          );
-        }
-      }, 30000);
-
-    } catch (error) {
-      console.error(error);
-
-      bot.sendMessage(
-        chatId,
-        "❌ Erreur API."
-      );
     }
-  },
 
-  async onReply({
-    bot,
-    chatId,
-    msg,
-    replyMsg,
-    data
-  }) {
-    try {
+    const cacheDir = path.join(__dirname, "cache");
+    await fs.ensureDir(cacheDir);
+
+    const mediaGroup = [];
+
+    for (let i = 0; i < list.length; i++) {
+      const item = list[i];
+
+      if (!item.thumbnail) continue;
+
+      try {
+        const imgPath = path.join(
+          cacheDir,
+          `thumb_${Date.now()}_${i}.jpg`
+        );
+
+        const stream = await streamFromURL(item.thumbnail);
+
+        const writer = fs.createWriteStream(imgPath);
+
+        stream.pipe(writer);
+
+        await new Promise((resolve, reject) => {
+          writer.on("finish", resolve);
+          writer.on("error", reject);
+        });
+
+        mediaGroup.push({
+          type: "photo",
+          media: imgPath
+        });
+
+      } catch (e) {
+        console.error("Thumbnail Error:", e.message);
+      }
+    }
+
+    await bot.deleteMessage(chatId, loadingMsg.message_id);
+
+    if (mediaGroup.length > 0) {
+      await bot.sendMediaGroup(chatId, mediaGroup, {
+        reply_to_message_id: msg.message_id
+      });
+    }
+
+    const sentMsg = await bot.sendMessage(
+      chatId,
+      buildMessage(list, userName),
+      {
+        reply_to_message_id: msg.message_id
+      }
+    );
+
+    mediaGroup.forEach(media => {
+      try {
+        if (fs.existsSync(media.media)) {
+          fs.unlinkSync(media.media);
+        }
+      } catch {}
+    });
+
+    global.teamnix.replies.set(sentMsg.message_id, {
+      nix,
+      type: "x_reply",
+      authorId: userId,
+      list
+    });
+
+    setTimeout(() => {
       if (
-        data.type !== "x_reply" ||
-        msg.from.id !== data.authorId
-      ) return;
-
-      const choice = parseInt(msg.text);
-
-      if (
-        isNaN(choice) ||
-        choice < 1 ||
-        choice > data.results.length
+        global.teamnix.replies.has(sentMsg.message_id)
       ) {
-        return bot.sendMessage(
+        global.teamnix.replies.delete(
+          sentMsg.message_id
+        );
+
+        bot.sendMessage(
           chatId,
-          "❌ Sélection invalide."
+          "⏰ Temps écoulé. Veuillez refaire la commande.",
+          {
+            reply_to_message_id: sentMsg.message_id
+          }
         );
       }
+    }, 60000);
 
-      const selected =
-        data.results[choice - 1];
+  } catch (error) {
+    console.error("X Search Error:", error);
 
-      global.teamnix.replies.delete(
-        replyMsg.message_id
-      );
+    if (loadingMsg) {
+      await bot
+        .deleteMessage(chatId, loadingMsg.message_id)
+        .catch(() => {});
+    }
 
-      const loadingMsg = await bot.sendMessage(
-        chatId,
-        `⏳ Téléchargement de la vidéo...\n\n` +
-        `🎬 ${selected.title}\n` +
-        `⏱️ ${selected.duration}`
-      );
-
-      const res = await axios.get(
-        `https://x-down-api-sagor.vercel.app/sagor?apikey=sagor&q=${encodeURIComponent(selected.url)}`,
-        {
-          timeout: 30000
-        }
-      );
-
-      const videoData = res.data.data;
-
-      const videoUrl =
-        videoData?.downloads?.[0]?.url;
-
-      if (!videoUrl) {
-        await bot.deleteMessage(
-          chatId,
-          loadingMsg.message_id
-        );
-
-        return bot.sendMessage(
-          chatId,
-          "❌ Impossible de récupérer la vidéo."
-        );
+    return bot.sendMessage(
+      chatId,
+      "❌ Une erreur est survenue avec l'API.",
+      {
+        reply_to_message_id: msg.message_id
       }
+    );
+  }
+}
 
-      const tempPath = path.join(
-        __dirname,
-        `x_${Date.now()}.mp4`
-      );
+async function onReply({
+  bot,
+  msg,
+  chatId,
+  userId,
+  data,
+  replyMsg
+}) {
+  if (data.type !== "x_reply") return;
 
-      const response = await axios({
-        url: videoUrl,
-        method: "GET",
-        responseType: "stream",
-        timeout: 30000
-      });
+  if (userId !== data.authorId) return;
 
-      const writer = fs.createWriteStream(
-        tempPath
-      );
+  const index = parseInt(msg.text);
 
-      response.data.pipe(writer);
+  if (
+    isNaN(index) ||
+    index < 1 ||
+    index > data.list.length
+  ) {
+    return bot.sendMessage(
+      chatId,
+      `❌ Choisissez un nombre entre 1 et ${data.list.length}.`,
+      {
+        reply_to_message_id: msg.message_id
+      }
+    );
+  }
 
-      await new Promise((resolve, reject) => {
-        writer.on("finish", resolve);
-        writer.on("error", reject);
-      });
+  const selected = data.list[index - 1];
 
-      await bot.sendVideo(
-        chatId,
-        tempPath,
-        {
-          caption:
-            `✅ Téléchargement réussi !\n\n` +
-            `🎬 ${videoData.title}\n` +
-            `⏱️ ${videoData.duration || "Inconnue"}`
-        }
-      );
+  const loadingMsg = await bot.sendMessage(
+    chatId,
+    `⏳ Téléchargement de "${selected.title}"...`,
+    {
+      reply_to_message_id: msg.message_id
+    }
+  );
 
+  try {
+    const res = await axios.get(
+      `https://x-down-api-sagor.vercel.app/sagor?apikey=sagor&q=${encodeURIComponent(selected.url)}`
+    );
+
+    const downloadData = res.data.data;
+
+    const videoUrl =
+      downloadData?.downloads?.[0]?.url;
+
+    if (!videoUrl) {
       await bot.deleteMessage(
         chatId,
         loadingMsg.message_id
       );
 
-      try {
-        await bot.deleteMessage(
-          chatId,
-          replyMsg.message_id
-        );
-      } catch {}
-
-      if (fs.existsSync(tempPath)) {
-        fs.unlinkSync(tempPath);
-      }
-
-    } catch (error) {
-      console.error(error);
-
-      bot.sendMessage(
+      return bot.sendMessage(
         chatId,
-        "❌ Échec du téléchargement."
+        "❌ Impossible de récupérer la vidéo.",
+        {
+          reply_to_message_id: msg.message_id
+        }
       );
     }
+
+    const filePath = path.join(
+      __dirname,
+      `xvideo_${Date.now()}.mp4`
+    );
+
+    const writer = fs.createWriteStream(filePath);
+
+    const videoStream = await axios({
+      url: videoUrl,
+      method: "GET",
+      responseType: "stream"
+    });
+
+    videoStream.data.pipe(writer);
+
+    await new Promise((resolve, reject) => {
+      writer.on("finish", resolve);
+      writer.on("error", reject);
+    });
+
+    await bot.sendVideo(chatId, filePath, {
+      caption:
+`🎬 ${downloadData.title}
+
+⏱️ ${downloadData.duration || "Inconnue"}`,
+      reply_to_message_id: msg.message_id
+    });
+
+    await bot.deleteMessage(
+      chatId,
+      loadingMsg.message_id
+    );
+
+    global.teamnix.replies.delete(
+      replyMsg.message_id
+    );
+
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+
+  } catch (error) {
+    console.error("Download Error:", error);
+
+    await bot
+      .deleteMessage(chatId, loadingMsg.message_id)
+      .catch(() => {});
+
+    return bot.sendMessage(
+      chatId,
+      "❌ Échec du téléchargement.",
+      {
+        reply_to_message_id: msg.message_id
+      }
+    );
   }
+}
+
+module.exports = {
+  nix,
+  onStart,
+  onReply
 };
