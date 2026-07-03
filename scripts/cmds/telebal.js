@@ -47,20 +47,11 @@ const CONFIG = {
 };
 
 // ========== GESTION BASE DE DONNÉES ==========
-const getDbPath = () => path.join(process.cwd(), 'database', 'balance.json');
-
-const getBalanceData = () => {
-    const dbPath = getDbPath();
-    const dbDir = path.dirname(dbPath);
-    if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
-    if (!fs.existsSync(dbPath)) fs.writeFileSync(dbPath, JSON.stringify({}));
-    return JSON.parse(fs.readFileSync(dbPath, 'utf8'));
-};
-
-const saveBalanceData = (data) => {
-    const dbPath = getDbPath();
-    fs.writeFileSync(dbPath, JSON.stringify(data, null, 2));
-};
+// Stockage MongoDB (remplace l'ancien fichier local database/balance.json,
+// qui ne persistait pas entre les redéploiements sur Render).
+const { getBalances, saveBalances } = require('../../database/mongoBalance.js');
+const getBalanceData = () => getBalances();
+const saveBalanceData = (data) => saveBalances(data);
 
 // ========== FONCTIONS UTILITAIRES ==========
 function formatMoney(amount) {
@@ -223,12 +214,12 @@ const nix = {
 async function onStart({ bot, msg, chatId, args }) {
     const senderID = msg.from.id;
     const senderName = msg.from.first_name || msg.from.username || "Utilisateur";
-    const balances = getBalanceData();
+    const balances = await getBalanceData();
 
     // Mettre à jour le nom du sender
     if (!balances[senderID]) balances[senderID] = { money: 0 };
     balances[senderID].name = senderName;
-    saveBalanceData(balances);
+    await saveBalanceData(balances);
 
     const command = args[0]?.toLowerCase();
 
@@ -256,7 +247,7 @@ async function onStart({ bot, msg, chatId, args }) {
         balances[senderID].money = (user.money || 0) + total;
         balances[senderID].lastDaily = now;
         balances[senderID].dailyStreak = newStreak;
-        saveBalanceData(balances);
+        await saveBalanceData(balances);
 
         return bot.sendMessage(chatId,
             `🎉 BONUS QUOTIDIEN 🎉\n\n` +
@@ -353,7 +344,7 @@ async function onStart({ bot, msg, chatId, args }) {
         balances[senderID].money = sender.money - taxInfo.total;
         balances[targetID].money = (receiver.money || 0) + amount;
         balances[targetID].name = receiver.name;
-        saveBalanceData(balances);
+        await saveBalanceData(balances);
 
         const txId = generateTransactionID();
         const msgSuccess = 
@@ -379,7 +370,7 @@ async function onStart({ bot, msg, chatId, args }) {
     // S'assurer que l'utilisateur cible existe dans la DB
     if (!balances[targetID]) balances[targetID] = { money: 0, name: targetName };
     else balances[targetID].name = targetName; // mise à jour du nom
-    saveBalanceData(balances);
+    await saveBalanceData(balances);
 
     const userData = balances[targetID];
     const balance = userData.money || 0;
