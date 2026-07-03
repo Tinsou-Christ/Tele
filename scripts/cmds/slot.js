@@ -1,6 +1,3 @@
-const fs = require('fs');
-const path = require('path');
-
 const nix = {
   name: "slots",
   version: "1.5",
@@ -14,19 +11,11 @@ const nix = {
 };
 
 /* ================= UTILS (BASE DE DONNÉES) ================= */
-
-const getBalanceData = () => {
-  const dataPath = path.join(process.cwd(), 'database', 'balance.json');
-  if (!fs.existsSync(dataPath)) {
-    fs.writeFileSync(dataPath, JSON.stringify({}));
-  }
-  return JSON.parse(fs.readFileSync(dataPath, 'utf8'));
-};
-
-const saveData = (data) => {
-  const dataPath = path.join(process.cwd(), 'database', 'balance.json');
-  fs.writeFileSync(dataPath, JSON.stringify(data, null, 2));
-};
+// Stockage MongoDB (remplace l'ancien fichier local database/balance.json,
+// qui ne persistait pas entre les redéploiements sur Render).
+const { getBalances, saveBalances } = require('../../database/mongoBalance.js');
+const getBalanceData = () => getBalances();
+const saveData = (data) => saveBalances(data);
 
 const formatMoney = (amount) => {
   if (isNaN(amount)) return "0 💰";
@@ -57,7 +46,7 @@ async function onStart({ bot, message, msg, chatId, args }) {
     return bot.sendMessage(chatId, "🔴 ERREUR : Veuillez entrer une mise valide !");
   }
 
-  let balances = getBalanceData();
+  let balances = await getBalanceData();
   let user = balances[userId] || { money: 0 };
 
   // Vérification du solde
@@ -122,7 +111,7 @@ async function onStart({ bot, message, msg, chatId, args }) {
   // 4. MISE À JOUR DU SOLDE
   user.money += winnings;
   balances[userId] = user;
-  saveData(balances);
+  await saveData(balances);
 
   // 5. AFFICHAGE VISUEL
   const slotBox =
@@ -153,3 +142,4 @@ module.exports = {
   nix,
   onStart
 };
+             
