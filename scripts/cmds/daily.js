@@ -1,19 +1,8 @@
-const fs = require('fs');
-const path = require('path');
-
-const dataPath = path.join(__dirname, '../../database/balance.json');
-
-const getData = () => {
-    if (!fs.existsSync(dataPath)) {
-        fs.writeFileSync(dataPath, JSON.stringify({}));
-    }
-    const data = fs.readFileSync(dataPath, 'utf8');
-    return JSON.parse(data);
-};
-
-const saveData = (data) => {
-    fs.writeFileSync(dataPath, JSON.stringify(data, null, 2));
-};
+// Stockage MongoDB (remplace l'ancien fichier local database/balance.json,
+// qui ne persistait pas entre les redéploiements sur Render).
+const { getBalances, saveBalances } = require('../../database/mongoBalance.js');
+const getData = () => getBalances();
+const saveData = (data) => saveBalances(data);
 
 const nix = {
     nix: {
@@ -29,7 +18,7 @@ const nix = {
     },
     onStart: async function ({ message, userId }) {
         try {
-            const balances = getData();
+            const balances = await getData();
             
             const now = Date.now();
             const oneDay = 24 * 60 * 60 * 1000;
@@ -48,7 +37,7 @@ const nix = {
             user.lastClaim = now;
             
             balances[userId] = user;
-            saveData(balances);
+            await saveData(balances);
 
             await message.reply(`💰 You claimed ${reward} BDT!\nYour total balance: ${user.money} BDT`);
         } catch (err) {
@@ -59,3 +48,4 @@ const nix = {
 };
 
 module.exports = nix;
+                
