@@ -40,19 +40,6 @@ const nix = {
 };
 
 async function onStart({ bot, msg, chatId, args }) {
-  const userId = msg.from.id;
-  const userName = msg.from.first_name || "Utilisateur";
-
-  let avatarFileId = null;
-  try {
-    const photos = await bot.getUserProfilePhotos(userId, 0, 1);
-    if (photos.total_count > 0) {
-      avatarFileId = photos.photos[0][0].file_id;
-    }
-  } catch (err) {
-    console.error("Erreur récupération avatar:", err);
-  }
-
   if (!global.teamnix || !global.teamnix.cmds) {
     return bot.sendMessage(chatId, "❌ Erreur : système de commandes non initialisé.", {
       reply_to_message_id: msg.message_id
@@ -71,23 +58,22 @@ async function onStart({ bot, msg, chatId, args }) {
     return null;
   };
 
+  // Mode IA
   if (args[0] && args[0].toLowerCase() === "-ai") {
     const cmdName = args[1] ? args[1].toLowerCase() : null;
     const questionRaw = args.slice(2).join(" ");
 
     if (!cmdName) {
-      const text = "❌ Usage : .help -ai <commande> <question>";
-      return avatarFileId
-        ? bot.sendPhoto(chatId, avatarFileId, { caption: text, reply_to_message_id: msg.message_id })
-        : bot.sendMessage(chatId, text, { reply_to_message_id: msg.message_id });
+      return bot.sendMessage(chatId, "❌ Usage : .help -ai <commande> <question>", {
+        reply_to_message_id: msg.message_id
+      });
     }
 
     const command = findCommand(cmdName);
     if (!command) {
-      const text = `❌ Commande "${cmdName}" introuvable.`;
-      return avatarFileId
-        ? bot.sendPhoto(chatId, avatarFileId, { caption: text, reply_to_message_id: msg.message_id })
-        : bot.sendMessage(chatId, text, { reply_to_message_id: msg.message_id });
+      return bot.sendMessage(chatId, `❌ Commande "${cmdName}" introuvable.`, {
+        reply_to_message_id: msg.message_id
+      });
     }
 
     const cmdNix = command.nix;
@@ -124,34 +110,34 @@ Réponds clairement dans la langue de l'utilisateur sans utiliser de caractères
       aiReply = aiReply.replace(/\*/g, "");
 
       const styledQuestion = toQuestionFont(questionRaw || "Explique comment utiliser cette commande.");
-
       const body = `🤖 Assistant IA — ${cmdNix.name}\n\n❓ ${styledQuestion}\n\n${aiReply}`;
 
-      if (avatarFileId) {
-        await bot.sendPhoto(chatId, avatarFileId, { caption: body, reply_to_message_id: msg.message_id });
+      // Vérifier la longueur du message
+      if (body.length > 4096) {
+        await bot.sendMessage(chatId, body.slice(0, 4000) + "\n\n...(message tronqué)", {
+          reply_to_message_id: msg.message_id
+        });
       } else {
         await bot.sendMessage(chatId, body, { reply_to_message_id: msg.message_id });
       }
     } catch (err) {
       console.error("Erreur IA:", err);
-      const text = "❌ Échec de la requête IA.";
-      return avatarFileId
-        ? bot.sendPhoto(chatId, avatarFileId, { caption: text, reply_to_message_id: msg.message_id })
-        : bot.sendMessage(chatId, text, { reply_to_message_id: msg.message_id });
+      return bot.sendMessage(chatId, "❌ Échec de la requête IA.", {
+        reply_to_message_id: msg.message_id
+      });
     }
-
     return;
   }
 
+  // Détails d'une commande spécifique
   if (args[0]) {
     const query = args[0].toLowerCase();
     const command = findCommand(query);
 
     if (!command) {
-      const text = `❌ Commande "${query}" introuvable.`;
-      return avatarFileId
-        ? bot.sendPhoto(chatId, avatarFileId, { caption: text, reply_to_message_id: msg.message_id })
-        : bot.sendMessage(chatId, text, { reply_to_message_id: msg.message_id });
+      return bot.sendMessage(chatId, `❌ Commande "${query}" introuvable.`, {
+        reply_to_message_id: msg.message_id
+      });
     }
 
     const cmdNix = command.nix;
@@ -173,11 +159,16 @@ Réponds clairement dans la langue de l'utilisateur sans utiliser de caractères
       `💡 Utilisation : ${prefix}${toCmdFont(usage)}`
     ].join("\n");
 
-    return avatarFileId
-      ? bot.sendPhoto(chatId, avatarFileId, { caption: card, reply_to_message_id: msg.message_id })
-      : bot.sendMessage(chatId, card, { reply_to_message_id: msg.message_id });
+    // Vérifier la longueur du message
+    if (card.length > 4096) {
+      return bot.sendMessage(chatId, card.slice(0, 4000) + "\n\n...(message tronqué)", {
+        reply_to_message_id: msg.message_id
+      });
+    }
+    return bot.sendMessage(chatId, card, { reply_to_message_id: msg.message_id });
   }
 
+  // Menu principal - Toutes les commandes
   const categorized = {};
 
   for (const cmd of commands.values()) {
@@ -196,7 +187,18 @@ Réponds clairement dans la langue de l'utilisateur sans utiliser de caractères
       .sort()
       .map(name => `✿ ${toCmdFont(name)}`)
       .join("  ");
-    body += `🍓 ${cat.toUpperCase()}\n${cmdList}\n\n`;
+    // Limiter la taille de chaque ligne pour éviter les messages trop longs
+    if (cmdList.length < 200) {
+      body += `🍓 ${cat.toUpperCase()}\n${cmdList}\n\n`;
+    } else {
+      // Si la liste est trop longue, l'afficher en plusieurs lignes
+      const chunks = cmdList.match(/.{1,200}/g) || [cmdList];
+      body += `🍓 ${cat.toUpperCase()}\n`;
+      chunks.forEach(chunk => {
+        body += `${chunk}\n`;
+      });
+      body += "\n";
+    }
   }
 
   const total = [...new Set([...commands.values()].map(c => c.nix.name))].length;
@@ -204,14 +206,16 @@ Réponds clairement dans la langue de l'utilisateur sans utiliser de caractères
   body += `🔧 Détail : ${prefix}help <commande>\n`;
   body += `🤖 Aide IA : ${prefix}help -ai <commande> <question>`;
 
-  if (avatarFileId) {
-    await bot.sendPhoto(chatId, avatarFileId, { caption: body, reply_to_message_id: msg.message_id });
-  } else {
-    await bot.sendMessage(chatId, body, { reply_to_message_id: msg.message_id });
+  // Vérifier et tronquer si nécessaire
+  if (body.length > 4096) {
+    body = body.slice(0, 4000) + "\n\n...(menu tronqué)";
   }
+
+  await bot.sendMessage(chatId, body, { reply_to_message_id: msg.message_id });
 }
 
 async function onReply({ bot, message, msg, chatId, userId, data, replyMsg }) {
+  // Fonction vide car non utilisée
 }
 
 module.exports = { onStart, onReply, nix };
