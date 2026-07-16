@@ -1,229 +1,220 @@
-// scripts/cmds/broadcast.js
+// scripts/cmds/notification.js
 //
-// Portage GoatBot -> nix (Tele) de scripts/cmds/notification.js (Botbot-main).
-// Renommée "broadcast" (et non "notification") car Tele-main a déjà une
-// commande nommée "notification" (Noti.js) avec un rôle différent : relais
-// de messages admin <-> utilisateur, pas diffusion à tous les groupes.
+// Portage de scripts/cmds/notification.js (Botbot/Goatbot) vers ce bot Telegram.
 //
-// Différences par rapport à l'original GoatBot :
-// - api.getUserInfo / threadsData.getAll() (FCA) -> réutilisation de la même
-//   logique multi-source que Noti.js (Mongo Thread model / threads.json /
-//   cache global.NixBot.threads / fallback groupe courant) pour lister les
-//   groupes.
-// - global.GoatBot.onReply -> global.NixBot.replies (Map), même mécanisme
-//   que Noti.js dans ce projet.
-// - -a (tag all) : Messenger permet de taguer TOUS les membres d'un groupe.
-//   Le Bot API Telegram ne donne accès qu'à la liste des ADMINS d'un groupe
-//   (pas la liste complète des membres). -a mentionne donc les admins
-//   uniquement, via un lien tg://user?id=... (fonctionne même sans @username).
-// - -p (pin) : bot.pinChatMessage, nécessite que le bot soit admin avec le
-//   droit "Épingler les messages".
-// - Pas d'attachments/mentions binaires FCA : les médias joints au message
-//   d'origine sont repris avec bot.copyMessage.
+// Différences avec la version Goatbot d'origine :
+// - La confirmation ("répondez oui") est conservée : c'est un envoi de masse
+//   à tous les groupes, on ne veut pas qu'un appui accidentel déclenche tout.
+// - La liste des groupes vient de global.db.threadsData (MongoDB), pas d'un
+//   fichier threads.json qui ne persiste pas sur Render.
+// - "-a" (tag all) : l'API Bot Telegram ne permet PAS de lister tous les
+//   membres d'un groupe (contrairement à l'API Facebook de Goatbot). On ne
+//   peut mentionner que les ADMINISTRATEURS du groupe (bot.getChatAdministrators).
+//   C'est indiqué clairement dans le guide pour ne pas induire en erreur.
+// - "-p" (pin) épingle le message envoyé dans chaque groupe si le bot a les
+//   droits nécessaires.
+
+const fs = require("fs");
+const path = require("path");
+
+const configPath = path.join(__dirname, "..", "..", "config.json");
+
+function loadConfig() {
+  try {
+    const raw = fs.readFileSync(configPath, "utf-8");
+    const config = JSON.parse(raw);
+    if (!config.admin) config.admin = [];
+    return config;
+  } catch (e) {
+    console.error("Error loading config.json:", e);
+    return { admin: [] };
+  }
+}
 
 const nix = {
   name: "notification",
-  aliases: ["noti"],
-  version: "1.0",
-  author: "Christus (GoatBot) / portage",
-  cooldown: 5,
-  role: 2, // propriétaire du bot uniquement (role 4 côté GoatBot -> équivalent max ici)
+  aliases: ["notify", "noti"],
+  version: "4.0",
+  author: "Christus",
+  role: 2,
   category: "owner",
-  description: "📢 Envoie un message à tous les groupes où le bot est présent.",
+  cooldown: 5,
+  description: "Envoie une notification à tous les groupes où le bot est présent (admin uniquement).",
   guide:
-    "{p}broadcast <message> [-a] [-p]\n" +
-    "  -a : mentionner les admins de chaque groupe (Telegram ne permet pas de taguer tous les membres via un bot)\n" +
-    "  -p : épingler le message dans chaque groupe (le bot doit être admin avec ce droit)"
+    "{p}notification <message> [-a] [-p]\n" +
+    "  -a : mentionner les administrateurs de chaque groupe (l'API Bot Telegram ne permet pas de mentionner tous les membres)\n" +
+    "  -p : épingler le message dans chaque groupe\n\n" +
+    "Une confirmation (\"oui\") est demandée avant l'envoi réel (30 secondes)."
 };
 
-const DELAY_PER_GROUP = 250;
-const MAX_RETRIES = 2;
-const CONFIRM_TIMEOUT = 30000;
+if (!global.teamnix) global.teamnix = {};
+if (!global.teamnix.replies) global.teamnix.replies = new Map();
 
 function parseArgs(args) {
   const options = { tagAdmins: false, pin: false };
   const parts = [];
-  for (const arg of args) {
-    if (arg === "-a" || arg === "--all") options.tagAdmins = true;
-    else if (arg === "-p" || arg === "--pin") options.pin = true;
-    else parts.push(arg);
+  for (const a of args) {
+    if (a === "-a" || a === "--all") options.tagAdmins = true;
+    else if (a === "-p" || a === "--pin") options.pin = true;
+    else parts.push(a);
   }
   return { text: parts.join(" "), options };
-}
-
-// Même logique multi-source que Noti.js pour rester cohérent avec le reste du projet.
-async function getGroupIds(bot, currentChatId) {
-  let groupIds = [];
-
-  if (global.mongoDB) {
-    try {
-      const mongoose = require("mongoose");
-      const Thread = mongoose.models.Thread || mongoose.model("Thread");
-      const threads = await Thread.find({});
-      groupIds = threads.map(t => t.threadID);
-      if (groupIds.length > 0) return groupIds;
-    } catch (e) {
-      console.error("[MONGODB] Erreur récupération threads:", e.message);
-    }
-  }
-
-  const fs = require("fs");
-  const path = require("path");
-  const threadsPath = path.join(process.cwd(), "database/data/threads.json");
-  if (fs.existsSync(threadsPath)) {
-    try {
-      const data = JSON.parse(fs.readFileSync(threadsPath, "utf8"));
-      groupIds = Object.keys(data).filter(id => id.toString().startsWith("-"));
-      if (groupIds.length > 0) return groupIds;
-    } catch (e) {}
-  }
-
-  if (global.NixBot && global.NixBot.threads) {
-    groupIds = Array.from(global.NixBot.threads.keys()).filter(id => id.toString().startsWith("-"));
-    if (groupIds.length > 0) return groupIds;
-  }
-
-  if (currentChatId.toString().startsWith("-")) {
-    groupIds = [currentChatId];
-  }
-
-  return groupIds;
 }
 
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function sendWithRetry(bot, tid, srcChatId, srcMsgId, text, options) {
-  let lastError;
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    try {
-      let sentMsg;
-
-      let finalText = text;
-      if (options.tagAdmins) {
-        try {
-          const admins = await bot.getChatAdministrators(tid);
-          const mentions = admins
-            .filter(a => !a.user.is_bot)
-            .map(a => `[${a.user.first_name}](tg://user?id=${a.user.id})`)
-            .join(" ");
-          if (mentions) finalText += `\n\n👥 ${mentions}`;
-        } catch (e) {
-          // Le bot n'est peut-être pas encore membre / pas de droits, on ignore
-        }
-      }
-
-      if (srcMsgId) {
-        sentMsg = await bot.copyMessage(tid, srcChatId, srcMsgId, {
-          caption: finalText,
-          parse_mode: "Markdown"
-        });
-      } else {
-        sentMsg = await bot.sendMessage(tid, finalText, { parse_mode: "Markdown" });
-      }
-
-      if (options.pin && sentMsg?.message_id) {
-        try {
-          await bot.pinChatMessage(tid, sentMsg.message_id);
-        } catch (e) {}
-      }
-
-      return { success: true };
-    } catch (err) {
-      lastError = err;
-      if (attempt < MAX_RETRIES) await delay(1000 * (attempt + 1));
-    }
-  }
-  return { success: false, error: lastError?.message };
-}
-
 async function onStart({ bot, msg, chatId, userId, args }) {
+  const config = loadConfig();
+  const admins = (config.admin || []).map(String);
+
+  if (!admins.includes(String(userId))) {
+    return bot.sendMessage(chatId, "❌ Seuls les administrateurs du bot peuvent utiliser cette commande.", {
+      reply_to_message_id: msg.message_id
+    });
+  }
+
   const { text, options } = parseArgs(args);
-  const hasMedia = !!(msg.photo || msg.video || msg.audio || msg.document || msg.voice || msg.animation);
+  const hasMedia = !!(msg.photo || msg.video || msg.audio || msg.document || msg.animation);
 
   if (!text && !hasMedia) {
-    return bot.sendMessage(
-      chatId,
-      "📢 Broadcast\n━━━━━━━━━━━━━━\n❌ Merci d'entrer un message ou de joindre un média.",
-      { reply_to_message_id: msg.message_id }
-    );
+    return bot.sendMessage(chatId, "📢 Veuillez entrer un message ou joindre un média à diffuser.", {
+      reply_to_message_id: msg.message_id
+    });
   }
 
-  const senderName = msg.from.first_name || "Administrateur";
-  const groupIds = await getGroupIds(bot, chatId);
-
-  if (groupIds.length === 0) {
-    return bot.sendMessage(chatId, "❌ Aucun groupe actif trouvé.", { reply_to_message_id: msg.message_id });
+  if (!global.db || !global.db.threadsData) {
+    return bot.sendMessage(chatId, "❌ Base de données non connectée (MongoDB indisponible).", {
+      reply_to_message_id: msg.message_id
+    });
   }
 
-  const notificationText =
-    `📢 𝗡𝗢𝗧𝗜𝗙𝗜𝗖𝗔𝗧𝗜𝗢𝗡 𝗗𝗘 𝗟'𝗔𝗗𝗠𝗜𝗡𝗜𝗦𝗧𝗥𝗔𝗧𝗘𝗨𝗥\n━━━━━━━━━━━━━━\nFrom : ${senderName}\n\n💬 :\n${text || ""}`;
+  const allThreads = await global.db.threadsData.getAll();
+  const groupThreads = allThreads.filter(t => t.threadType === "group" || t.threadType === "supergroup");
+
+  if (!groupThreads.length) {
+    return bot.sendMessage(chatId, "❌ Aucun groupe enregistré en base pour le moment.", {
+      reply_to_message_id: msg.message_id
+    });
+  }
+
+  const senderName = msg.from.first_name + (msg.from.last_name ? ` ${msg.from.last_name}` : "");
 
   const confirmText =
-    `📢 Envoi de broadcast\n━━━━━━━━━━━━━━\n➜ ${groupIds.length} groupe(s) concerné(s)\n` +
-    `➜ Délai : ${DELAY_PER_GROUP} ms par groupe\n` +
-    `➜ Options : ${options.tagAdmins ? "tag admins" : "aucun tag"} ${options.pin ? "+ pin" : ""}\n` +
-    `➜ From : ${senderName}\n\n✅ Confirmez l'envoi en répondant "oui" (30 secondes).`;
+    `📢 Envoi de notification\n━━━━━━━━━━━━━━━━━━\n` +
+    `➜ ${groupThreads.length} groupe(s) concerné(s)\n` +
+    `➜ Options : ${options.tagAdmins ? "mention admins" : "aucune mention"}${options.pin ? " + épinglage" : ""}\n` +
+    `➜ Expéditeur : ${senderName}\n\n` +
+    `✅ Répondez "oui" à ce message pour confirmer l'envoi (30 secondes).`;
 
   const confirmMsg = await bot.sendMessage(chatId, confirmText, { reply_to_message_id: msg.message_id });
 
-  if (!global.NixBot) global.NixBot = {};
-  if (!global.NixBot.replies) global.NixBot.replies = new Map();
-
-  const replyKey = confirmMsg.message_id.toString();
-  global.NixBot.replies.set(replyKey, {
-    type: "confirm_broadcast",
+  global.teamnix.replies.set(String(confirmMsg.message_id), {
+    commandName: nix.name,
+    type: "confirm_notification",
     authorId: userId,
-    authorChatId: chatId,
-    srcMsgId: hasMedia ? msg.message_id : null,
-    notificationText,
-    groupIds,
-    options
+    sourceChatId: chatId,
+    sourceMsgId: msg.message_id,
+    hasMedia,
+    groupThreads,
+    text,
+    options,
+    senderName
   });
 
   setTimeout(() => {
-    const data = global.NixBot.replies.get(replyKey);
-    if (data && data.type === "confirm_broadcast") {
-      global.NixBot.replies.delete(replyKey);
+    const pending = global.teamnix.replies.get(String(confirmMsg.message_id));
+    if (pending && pending.type === "confirm_notification") {
+      global.teamnix.replies.delete(String(confirmMsg.message_id));
       bot.sendMessage(chatId, "⏰ Temps écoulé, envoi annulé.", { reply_to_message_id: confirmMsg.message_id }).catch(() => {});
     }
-  }, CONFIRM_TIMEOUT);
+  }, 30000);
 }
 
 async function onReply({ bot, msg, chatId, userId, data }) {
-  if (!data || data.type !== "confirm_broadcast") return;
-  if (userId !== data.authorId) return;
+  if (!data || data.type !== "confirm_notification") return;
+  if (userId !== data.authorId) return; // seul l'admin qui a lancé la commande peut confirmer
 
-  // On consomme l'entrée tout de suite pour éviter un double-déclenchement
-  const replyKey = msg.reply_to_message ? msg.reply_to_message.message_id.toString() : null;
-  if (replyKey) global.NixBot.replies.delete(replyKey);
+  // Retire l'entrée en attente (par sa clé de message)
+  for (const [key, val] of global.teamnix.replies.entries()) {
+    if (val === data) { global.teamnix.replies.delete(key); break; }
+  }
 
-  if ((msg.text || "").trim().toLowerCase() !== "oui") {
+  const answer = (msg.text || "").trim().toLowerCase();
+  if (answer !== "oui") {
     return bot.sendMessage(chatId, "❌ Envoi annulé.", { reply_to_message_id: msg.message_id });
   }
 
-  const { groupIds, notificationText, srcMsgId, authorChatId, options } = data;
-  const startTime = Date.now();
+  const { groupThreads, text, options, senderName, sourceChatId, sourceMsgId, hasMedia } = data;
 
-  await bot.sendMessage(chatId, `📢 Début de l'envoi à ${groupIds.length} groupe(s)...`, {
+  await bot.sendMessage(chatId, `📢 Début de l'envoi à ${groupThreads.length} groupe(s)...`, {
     reply_to_message_id: msg.message_id
   });
 
   const results = { success: [], failed: [] };
-  for (const tid of groupIds) {
-    const res = await sendWithRetry(bot, tid, authorChatId, srcMsgId, notificationText, options);
-    if (res.success) results.success.push(tid);
-    else results.failed.push(tid);
-    await delay(DELAY_PER_GROUP);
+  const batchSize = 10;
+  const delayPerGroup = 300;
+  const maxRetries = 2;
+
+  for (let i = 0; i < groupThreads.length; i += batchSize) {
+    const batch = groupThreads.slice(i, i + batchSize);
+
+    for (const thread of batch) {
+      const targetId = thread.chatId;
+      let sent = false;
+      let lastErr;
+
+      for (let attempt = 0; attempt <= maxRetries && !sent; attempt++) {
+        try {
+          let header = `📢 𝗡𝗢𝗧𝗜𝗙𝗜𝗖𝗔𝗧𝗜𝗢𝗡 𝗗𝗘 𝗟'𝗔𝗗𝗠𝗜𝗡\n━━━━━━━━━━━━━━━━━━\nDe : ${senderName}\n\n${text}`;
+
+          if (options.tagAdmins) {
+            try {
+              const chatAdmins = await bot.getChatAdministrators(targetId);
+              const mentions = chatAdmins
+                .filter(a => !a.user.is_bot)
+                .map(a => (a.user.username ? `@${a.user.username}` : a.user.first_name))
+                .join(" ");
+              if (mentions) header += `\n\n${mentions}`;
+            } catch (e) {
+              // pas de droits ou groupe introuvable : on ignore silencieusement
+            }
+          }
+
+          let sentMsg;
+          if (hasMedia) {
+            sentMsg = await bot.copyMessage(targetId, sourceChatId, sourceMsgId, { caption: header });
+          } else {
+            sentMsg = await bot.sendMessage(targetId, header);
+          }
+
+          if (options.pin) {
+            try { await bot.pinChatMessage(targetId, sentMsg.message_id); } catch (e) {}
+          }
+
+          sent = true;
+        } catch (err) {
+          lastErr = err;
+          if (attempt < maxRetries) await delay(1000 * (attempt + 1));
+        }
+      }
+
+      if (sent) results.success.push(targetId);
+      else results.failed.push({ id: targetId, error: lastErr?.message });
+
+      await delay(delayPerGroup);
+    }
+
+    if (i + batchSize < groupThreads.length) await delay(1000);
   }
 
-  const totalTime = ((Date.now() - startTime) / 1000).toFixed(2);
-  const resultMsg =
-    `📢 Rapport d'envoi\n━━━━━━━━━━━━━━\n✅ Réussis : ${results.success.length}\n` +
-    `❌ Échecs : ${results.failed.length}\n⏱️ Temps : ${totalTime}s`;
+  const report =
+    `📢 Rapport d'envoi\n━━━━━━━━━━━━━━━━━━\n` +
+    `✅ Réussis : ${results.success.length}\n` +
+    `❌ Échecs : ${results.failed.length}`;
 
-  return bot.sendMessage(chatId, resultMsg, { reply_to_message_id: msg.message_id });
+  await bot.sendMessage(chatId, report, { reply_to_message_id: sourceMsgId });
 }
 
 module.exports = { nix, onStart, onReply };
