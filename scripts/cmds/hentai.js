@@ -82,7 +82,7 @@ async function onStart({
     );
 
     const res = await axios.get(
-      "https://uraryanapi.onrender.com/api/hentai"
+      "https://arychauhann.onrender.com/api/hentai"
     );
 
     const rawData = res.data;
