@@ -1,4 +1,13 @@
-const axios = require("axios");
+// scripts/cmds/callad.js
+//
+// Portage de scripts/cmds/callad.js (Botbot/Goatbot) vers ce bot Telegram.
+//
+// Différence importante avec une version "download puis reupload" :
+// on utilise bot.copyMessage (comme Noti.js) au lieu de télécharger le
+// média sur disque puis le renvoyer. Sur Render le disque est éphémère et
+// non nettoyé de façon fiable entre requêtes : copyMessage évite complètement
+// l'écriture de fichiers temporaires, c'est plus rapide et plus sûr.
+
 const fs = require("fs");
 const path = require("path");
 
@@ -6,12 +15,12 @@ const configPath = path.join(__dirname, "..", "..", "config.json");
 
 function loadConfig() {
   try {
-    const configData = fs.readFileSync(configPath, "utf-8");
-    const config = JSON.parse(configData);
+    const raw = fs.readFileSync(configPath, "utf-8");
+    const config = JSON.parse(raw);
     if (!config.admin) config.admin = [];
     return config;
-  } catch (error) {
-    console.error("Error loading config.json:", error);
+  } catch (e) {
+    console.error("Error loading config.json:", e);
     return { admin: [], prefix: "!" };
   }
 }
@@ -34,91 +43,51 @@ const lang = {
 function getLang(key, ...args) {
   let str = lang[key] || key;
   args.forEach((arg, i) => {
-    str = str.replace(new RegExp(`%${i+1}`, 'g'), arg);
+    str = str.replace(new RegExp(`%${i + 1}`, "g"), arg);
   });
   return str;
 }
 
-async function downloadFile(fileId, bot, ext) {
-  const fileLink = await bot.getFileLink(fileId);
-  const tempDir = path.join(__dirname, "temp");
-  if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
-  const filePath = path.join(tempDir, `callad_${Date.now()}_${Math.random()}.${ext}`);
-  const response = await axios({ method: "GET", url: fileLink, responseType: "stream" });
-  const writer = fs.createWriteStream(filePath);
-  response.data.pipe(writer);
-  await new Promise((resolve, reject) => {
-    writer.on("finish", resolve);
-    writer.on("error", reject);
+// Copie le message (texte + média éventuel) vers un chat cible, avec un
+// texte d'en-tête personnalisé en légende. Retourne l'ID du message envoyé.
+async function forwardCalladMessage(bot, targetChatId, headerText, msg, replyToMsgId = null) {
+  const hasMedia = !!(msg.photo || msg.video || msg.audio || msg.document || msg.voice || msg.animation);
+
+  if (hasMedia) {
+    const sent = await bot.copyMessage(targetChatId, msg.chat.id, msg.message_id, {
+      caption: headerText,
+      reply_to_message_id: replyToMsgId || undefined
+    });
+    return sent;
+  }
+
+  return bot.sendMessage(targetChatId, headerText, {
+    reply_to_message_id: replyToMsgId || undefined
   });
-  return filePath;
-}
-
-async function sendWithAttachments(bot, chatId, text, msg, replyToMsgId = null) {
-  const attachments = [];
-  if (msg.photo && msg.photo.length > 0) {
-    const fileId = msg.photo[msg.photo.length - 1].file_id;
-    attachments.push({ type: "photo", fileId });
-  }
-  if (msg.video) {
-    attachments.push({ type: "video", fileId: msg.video.file_id });
-  }
-  if (msg.audio) {
-    attachments.push({ type: "audio", fileId: msg.audio.file_id });
-  }
-  if (msg.document && msg.document.mime_type?.startsWith("image/")) {
-    attachments.push({ type: "photo", fileId: msg.document.file_id });
-  } else if (msg.document && msg.document.mime_type?.startsWith("video/")) {
-    attachments.push({ type: "video", fileId: msg.document.file_id });
-  } else if (msg.document && msg.document.mime_type?.startsWith("audio/")) {
-    attachments.push({ type: "audio", fileId: msg.document.file_id });
-  }
-
-  const mainMsg = await bot.sendMessage(chatId, text, { reply_to_message_id: replyToMsgId });
-  const messageIds = [mainMsg.message_id];
-
-  for (const att of attachments) {
-    try {
-      const ext = att.type === "photo" ? "jpg" : att.type === "video" ? "mp4" : "mp3";
-      const filePath = await downloadFile(att.fileId, bot, ext);
-      let sent;
-      if (att.type === "photo") {
-        sent = await bot.sendPhoto(chatId, filePath, { reply_to_message_id: mainMsg.message_id });
-      } else if (att.type === "video") {
-        sent = await bot.sendVideo(chatId, filePath, { reply_to_message_id: mainMsg.message_id });
-      } else if (att.type === "audio") {
-        sent = await bot.sendAudio(chatId, filePath, { reply_to_message_id: mainMsg.message_id });
-      }
-      if (sent) messageIds.push(sent.message_id);
-      fs.unlinkSync(filePath);
-    } catch (e) {
-      console.error("Failed to send attachment", e);
-    }
-  }
-
-  return { mainMsg, messageIds };
 }
 
 const nix = {
   name: "callad",
   aliases: [],
-  version: "1.8",
+  version: "1.9",
   author: "Christus",
-  description: "Envoyer un rapport, suggestion, bug à l'admin du bot.",
-  guide: ["/callad <message>", "Répondre à un message du bot pour échanger"],
+  role: 0,
+  description: "Envoyer un rapport, une suggestion ou un bug à l'admin du bot.",
+  guide: "{p}callad <message>\nRépondez à un message du bot pour échanger avec l'admin.",
   cooldown: 5,
-  type: "anyone",
-  category: "contacts admin",
+  category: "contacts admin"
 };
+
+if (!global.teamnix) global.teamnix = {};
+if (!global.teamnix.replies) global.teamnix.replies = new Map();
 
 async function onStart({ bot, msg, chatId, userId, args }) {
   const config = loadConfig();
-  const admins = config.admin.map(String);
+  const admins = (config.admin || []).map(String);
 
   if (!args.length) {
     return bot.sendMessage(chatId, getLang("missingMessage"), { reply_to_message_id: msg.message_id });
   }
-
   if (admins.length === 0) {
     return bot.sendMessage(chatId, getLang("noAdmin"), { reply_to_message_id: msg.message_id });
   }
@@ -135,10 +104,11 @@ async function onStart({ bot, msg, chatId, userId, args }) {
     }
   }
 
-  const header = "==📨 APPEL ADMIN 📨=="
-    + `\n- Nom : ${senderName}`
-    + `\n- ID : ${userId}`
-    + (isGroup ? getLang("sendByGroup", groupName, chatId) : getLang("sendByUser"));
+  const header =
+    "==📨 APPEL ADMIN 📨==" +
+    `\n- Nom : ${senderName}` +
+    `\n- ID : ${userId}` +
+    (isGroup ? getLang("sendByGroup", groupName, chatId) : getLang("sendByUser"));
 
   const fullText = header + getLang("content", args.join(" "));
 
@@ -147,20 +117,16 @@ async function onStart({ bot, msg, chatId, userId, args }) {
 
   for (const adminId of admins) {
     try {
-      const { messageIds } = await sendWithAttachments(bot, adminId, fullText, msg);
-      
-      if (!global.teamnix) global.teamnix = { replies: new Map() };
-      
-      for (const mid of messageIds) {
-        global.teamnix.replies.set(String(mid), {
-          commandName: nix.name,
-          name: nix.name,
-          type: "userCallAdmin",
-          userThreadId: chatId,
-          userMsgId: msg.message_id,
-          adminId: adminId
-        });
-      }
+      const sent = await forwardCalladMessage(bot, adminId, fullText, msg);
+
+      global.teamnix.replies.set(String(sent.message_id), {
+        commandName: nix.name,
+        type: "userCallAdmin",
+        userThreadId: chatId,      // chat d'origine de l'utilisateur
+        userMsgId: msg.message_id, // message d'origine à citer en réponse
+        adminId
+      });
+
       success.push(adminId);
     } catch (e) {
       failed.push(adminId);
@@ -170,7 +136,7 @@ async function onStart({ bot, msg, chatId, userId, args }) {
   let resultMsg = "";
   if (success.length) resultMsg += getLang("success", success.length, success.map(id => `- ${id}`).join("\n"));
   if (failed.length) resultMsg += getLang("failed", failed.length, failed.map(id => `- ${id}`).join("\n"));
-  
+
   await bot.sendMessage(chatId, resultMsg, { reply_to_message_id: msg.message_id });
 }
 
@@ -178,59 +144,56 @@ async function onReply({ bot, msg, chatId, userId, data }) {
   if (!data) return;
 
   const config = loadConfig();
-  const admins = config.admin.map(String);
+  const admins = (config.admin || []).map(String);
   const isAdmin = admins.includes(String(userId));
   const senderName = msg.from.first_name + (msg.from.last_name ? ` ${msg.from.last_name}` : "");
 
   const { type, userThreadId, userMsgId, adminId } = data;
 
   if (type === "userCallAdmin" && isAdmin) {
+    // L'admin répond → on transmet à l'utilisateur d'origine
     const replyText = getLang("reply", senderName, msg.text || "📷 Média");
     try {
-      const { messageIds } = await sendWithAttachments(bot, userThreadId, replyText, msg, userMsgId);
-      
-      if (!global.teamnix) global.teamnix = { replies: new Map() };
-      
-      for (const mid of messageIds) {
-        global.teamnix.replies.set(String(mid), {
-          commandName: nix.name,
-          name: nix.name,
-          type: "adminReply",
-          userThreadId: chatId,
-          userMsgId: msg.message_id,
-          adminId: userId
-        });
-      }
+      const sent = await forwardCalladMessage(bot, userThreadId, replyText, msg, userMsgId);
+
+      global.teamnix.replies.set(String(sent.message_id), {
+        commandName: nix.name,
+        type: "adminReply",
+        userThreadId: chatId, // = chat de l'admin, pour router la prochaine réponse ici
+        userMsgId: msg.message_id,
+        adminId: userId
+      });
+
       await bot.sendMessage(chatId, getLang("replyUserSuccess"), { reply_to_message_id: msg.message_id });
     } catch (e) {
       await bot.sendMessage(chatId, "❌ Erreur d'envoi.", { reply_to_message_id: msg.message_id });
     }
-  } else if (type === "adminReply" && !isAdmin) {
+    return;
+  }
+
+  if (type === "adminReply" && !isAdmin) {
+    // L'utilisateur répond à l'admin → on transmet en retour à l'admin
     const feedbackText = getLang("feedback", senderName, userId, "", msg.text || "📷 Média");
     try {
-      const { messageIds } = await sendWithAttachments(bot, adminId, feedbackText, msg);
-      
-      if (!global.teamnix) global.teamnix = { replies: new Map() };
-      
-      for (const mid of messageIds) {
-        global.teamnix.replies.set(String(mid), {
-          commandName: nix.name,
-          name: nix.name,
-          type: "userCallAdmin",
-          userThreadId: chatId,
-          userMsgId: msg.message_id,
-          adminId: userId
-        });
-      }
+      const sent = await forwardCalladMessage(bot, adminId, feedbackText, msg);
+
+      global.teamnix.replies.set(String(sent.message_id), {
+        commandName: nix.name,
+        type: "userCallAdmin",
+        userThreadId: chatId,
+        userMsgId: msg.message_id,
+        adminId
+      });
+
       await bot.sendMessage(chatId, getLang("replySuccess"), { reply_to_message_id: msg.message_id });
     } catch (e) {
       await bot.sendMessage(chatId, "❌ Erreur d'envoi.", { reply_to_message_id: msg.message_id });
     }
+    return;
   }
+
+  // Contexte reconnu mais mauvais rôle (ex: un non-admin répond à un message "userCallAdmin")
+  await bot.sendMessage(chatId, getLang("invalidReply"), { reply_to_message_id: msg.message_id });
 }
 
-module.exports = {
-  nix,
-  onStart,
-  onReply,
-};
+module.exports = { nix, onStart, onReply };
